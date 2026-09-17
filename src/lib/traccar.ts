@@ -9,20 +9,40 @@ const BASE_URL = process.env.TRACCAR_URL ?? "http://localhost:8082";
 // singleton elsewhere) so we don't log in to Traccar on every request.
 let sessionCookie: string | null = null;
 
-async function login(): Promise<string> {
-  const email = process.env.TRACCAR_EMAIL;
-  const password = process.env.TRACCAR_PASSWORD;
-  if (!email || !password) throw new Error("TRACCAR_EMAIL/TRACCAR_PASSWORD belum diset di server.");
-
+async function sessionLogin(email: string, password: string): Promise<string | null> {
   const res = await fetch(`${BASE_URL}/api/session`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ email, password }),
   });
-  if (!res.ok) throw new Error(`Login ke Traccar gagal: ${res.status}`);
+  if (!res.ok) return null;
   const cookie = res.headers.get("set-cookie");
-  if (!cookie) throw new Error("Traccar tidak mengirim session cookie.");
-  return cookie.split(";")[0];
+  return cookie ? cookie.split(";")[0] : null;
+}
+
+async function login(): Promise<string> {
+  const email = process.env.TRACCAR_EMAIL;
+  const password = process.env.TRACCAR_PASSWORD;
+  if (!email || !password) throw new Error("TRACCAR_EMAIL/TRACCAR_PASSWORD belum diset di server.");
+
+  const cookie = await sessionLogin(email, password);
+  if (cookie) return cookie;
+
+  // Brand-new Traccar server has no users yet — Traccar lets the very first
+  // POST /api/users through unauthenticated and makes it admin. Safe to
+  // attempt on every failed login: once a user exists, Traccar rejects this
+  // and we fall through to the real error below.
+  const createRes = await fetch(`${BASE_URL}/api/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Admin", email, password }),
+  });
+  if (createRes.ok) {
+    const retryCookie = await sessionLogin(email, password);
+    if (retryCookie) return retryCookie;
+  }
+
+  throw new Error("Login ke Traccar gagal dan pembuatan admin awal juga gagal.");
 }
 
 async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
