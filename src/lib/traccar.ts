@@ -8,6 +8,10 @@ const BASE_URL = process.env.TRACCAR_URL ?? "http://localhost:8082";
 // process stays warm on Railway, same pattern as the Prisma client
 // singleton elsewhere) so we don't log in to Traccar on every request.
 let sessionCookie: string | null = null;
+// Concurrent requests (e.g. the dashboard's parallel /api/devices + /api/positions
+// on first load) must share one login attempt — otherwise each sees sessionCookie
+// as null and races to create the first-admin account, and only one can win.
+let loginPromise: Promise<string> | null = null;
 
 async function sessionLogin(email: string, password: string): Promise<string | null> {
   const res = await fetch(`${BASE_URL}/api/session`, {
@@ -46,7 +50,10 @@ async function login(): Promise<string> {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
-  if (!sessionCookie) sessionCookie = await login();
+  if (!sessionCookie) {
+    if (!loginPromise) loginPromise = login().finally(() => (loginPromise = null));
+    sessionCookie = await loginPromise;
+  }
 
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
